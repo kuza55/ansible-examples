@@ -1,0 +1,13 @@
+- hosts: localhost
+  connection: local
+  gather_facts: False
+
+  tasks:
+    - ec2_ami:
+        region: us-east-1
+        instance_id: "{{ instance_id }}"
+        wait: no
+        name: tensorflow_ami
+      register: tf_ami
+
+    - debug: var=tf_ami

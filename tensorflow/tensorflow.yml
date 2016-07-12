@@ -1,0 +1,87 @@
+- hosts: localhost
+  connection: local
+
+  vars:
+    region: us-east-1
+    az: us-east-1d
+    #tf_subnet_id: Subnet IF goes here
+    #tf_sg_id: Security Group ID goes here
+    #tf_vol_id: Volume ID for persistent /data mount
+
+  tasks:
+
+    - name: Provision a set of instances
+      ec2:
+         spot_price: 1.0
+         spot_wait_timeout: 600
+         key_name: TFKey
+         region: "{{ region }}"
+         group_id: "{{ tf_sg_id }}"
+         instance_type: g2.2xlarge	
+         image: ami-d05e75b8
+         wait: true
+         exact_count: 1
+         count_tag:
+            Name: TFLearn
+         instance_tags:
+            Name: TFLearn
+         vpc_subnet_id: "{{ tf_subnet_id }}"
+         assign_public_ip: yes
+         zone: "{{ az }}"
+         volumes:
+           - device_name: /dev/sda1
+             volume_type: gp2
+             volume_size: 20
+             delete_on_termination: true
+      register: tensorflow
+
+    - name: Add all instance public IPs to host group for SSH
+      add_host: hostname={{ item.public_ip }} groups=tensorflow_ssh
+      with_items: "{{tensorflow.tagged_instances}}"
+      
+    - name: attach EBS volume with data
+      ec2_vol:
+        instance: "{{ item.id }}"
+        id: "{{ tf_vol_id }}"
+        device_name: /dev/sdf
+        region: "{{ region }}"
+        zone: "{{ az }}"
+      with_items: "{{tensorflow.tagged_instances}}"
+
+    - name: Wait for SSH to come up
+      local_action: wait_for 
+      args:
+        host: "{{ item.public_ip }}"
+        port: 22 
+        state: started
+      with_items: "{{tensorflow.tagged_instances}}"
+
+- hosts: tensorflow_ssh
+  remote_user: ubuntu
+  become: true
+  
+  roles:
+    - kuza55.tensorflow
+
+  tasks:
+    - filesystem: fstype=ext4 dev=/dev/xvdf
+    - mount: name=/data src=/dev/xvdf fstype=ext4 state=mounted
+      
+    - name: Update ubuntu bashrc for CUDA libs
+      lineinfile:
+        dest: /home/ubuntu/.bashrc
+        line: "export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+        regexp: "export LD_LIBRARY_PATH=/usr/local/cuda/lib64"
+        owner: ubuntu
+        state: present
+        insertafter: EOF
+        create: True
+
+    - apt: update_cache=yes
+    - apt: upgrade=full
+
+- hosts: localhost
+  gather_facts: False
+
+  tasks:
+    - debug: msg="Configured instance with id {{ tensorflow.tagged_instances.0.id }}"

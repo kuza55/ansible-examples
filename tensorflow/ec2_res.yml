@@ -1,0 +1,115 @@
+- hosts: localhost
+  connection: local
+
+  vars:
+    region: us-east-1
+    az: us-east-1d
+
+  tasks:
+
+    - name: Find out playbook's path
+      shell: pwd
+      register: playbook_path_output
+
+    - name: Provision an ec2 keypair
+      ec2_key:
+        name: TFKey
+        region: "{{ region }}"
+        state: present
+      register: tfkey
+
+    #- debug: var=tfkey
+    
+    - name: Save Private Key as tfkey.pem
+      when: tfkey.key.private_key is defined
+      copy:
+        content: "{{ tfkey.key.private_key }}"
+        dest: "{{ playbook_path_output.stdout }}/tfkey.pem"
+        force: no
+
+    - name: Create VPC
+      ec2_vpc:
+        state: present
+        cidr_block: 172.22.0.0/16
+        resource_tags: { "Environment":"TensorFlow" }
+        internet_gateway: True
+        region: "{{ region }}"
+        resource_tags:
+          Name: TensorFlow VPC
+      register: vpc
+
+    #- debug: var=vpc
+
+    - set_fact:
+        tf_vpc_id: "{{ vpc.vpc_id }}"
+
+    - debug:
+        msg: "Created VPC {{ tf_vpc_id }}"
+
+    - name: Create subnet for TensorFlow
+      ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        az: "{{ az }}"
+        cidr: 172.22.1.0/24
+        resource_tags:
+          Name: TensorFlow Subnet
+      register: subnet
+
+    #- debug: var=subnet
+
+    - set_fact:
+        tf_subnet_id: "{{ subnet.subnet.id }}"
+
+    - debug:
+        msg: "Created VPC {{ tf_subnet_id }}"
+
+    - name: Set up public subnet route table
+      ec2_vpc_route_table:
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        tags:
+          Name: Public
+        subnets:
+          - "{{ subnet.subnet.id }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: igw
+
+    - name: Security Group which allows inbound SSH
+      ec2_group:
+        name: SSH-Only
+        description: Inbound SSH Only
+        vpc_id: "{{ vpc.vpc_id }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+      register: security_group
+
+    #- debug: var=security_group
+
+    - set_fact:
+        tf_sg_id: "{{ security_group.group_id }}"
+
+    - debug:
+        msg: "Created Security Group {{ tf_sg_id }}"
+
+    - ec2_vol:
+        name: TensorFlow_Data_Volume
+        volume_size: 10
+        volume_type: gp2
+        region: "{{ region }}"
+        zone: "{{ az }}"
+      register: volume
+
+    #- debug: var=volume
+
+    - set_fact:
+        tf_vol_id: "{{ volume.volume_id }}"
+
+    - debug:
+        msg: "Created Storage volume {{ tf_vol_id }}"
